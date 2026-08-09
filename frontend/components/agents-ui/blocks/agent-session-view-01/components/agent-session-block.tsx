@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import { Track } from 'livekit-client';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
@@ -8,7 +9,9 @@ import {
   AgentControlBar,
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
+import { StatusIndicator } from '@/components/agents-ui/status-indicator';
 import { Shimmer } from '@/components/ai-elements/shimmer';
+import { useMicrophoneErrors } from '@/hooks/useMicrophoneErrors';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
 
@@ -178,8 +181,10 @@ export function AgentSessionView_01({
   const session = useSessionContext();
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
+  const [callEnded, setCallEnded] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const { handleDeviceError } = useMicrophoneErrors();
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -188,6 +193,12 @@ export function AgentSessionView_01({
     camera: supportsVideoInput,
     screenShare: supportsScreenShare,
   };
+
+  useEffect(() => {
+    if (agentState === 'failed') {
+      setCallEnded(true);
+    }
+  }, [agentState]);
 
   useEffect(() => {
     const lastMessage = messages.at(-1);
@@ -205,6 +216,12 @@ export function AgentSessionView_01({
       {...props}
     >
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
+
+      {/* Status Indicator */}
+      <div className="pointer-events-none absolute top-8 right-0 left-0 z-20">
+        <StatusIndicator agentState={agentState} callEnded={callEnded} />
+      </div>
+
       {/* transcript */}
 
       <div className="absolute top-0 bottom-[135px] flex w-full flex-col md:bottom-[170px]">
@@ -259,14 +276,30 @@ export function AgentSessionView_01({
         )}
         <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
           <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
-          <AgentControlBar
-            variant="livekit"
-            controls={controls}
-            isChatOpen={chatOpen}
-            isConnected={session.isConnected}
-            onDisconnect={session.end}
-            onIsChatOpenChange={setChatOpen}
-          />
+          {callEnded ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <button
+                onClick={() => {
+                  setCallEnded(false);
+                  session.end();
+                  window.location.reload();
+                }}
+                className="rounded-lg bg-blue-600 px-8 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+              >
+                Start again
+              </button>
+            </div>
+          ) : (
+            <AgentControlBar
+              variant="livekit"
+              controls={controls}
+              isChatOpen={chatOpen}
+              isConnected={session.isConnected}
+              onDisconnect={session.end}
+              onIsChatOpenChange={setChatOpen}
+              onDeviceError={handleDeviceError}
+            />
+          )}
         </div>
       </motion.div>
     </section>

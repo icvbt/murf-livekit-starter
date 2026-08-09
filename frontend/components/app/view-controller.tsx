@@ -2,12 +2,14 @@
 
 import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
-import { useSessionContext } from '@livekit/components-react';
+import { useAgent, useSessionContext } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
+import { ConnectingView } from '@/components/app/connecting-view';
 import { WelcomeView } from '@/components/app/welcome-view';
 
 const MotionWelcomeView = motion.create(WelcomeView);
+const MotionConnectingView = motion.create(ConnectingView);
 const MotionSessionView = motion.create(AgentSessionView_01);
 
 const VIEW_MOTION_PROPS = {
@@ -34,12 +36,13 @@ interface ViewControllerProps {
 
 export function ViewController({ appConfig }: ViewControllerProps) {
   const { isConnected, start } = useSessionContext();
+  const { state: agentState } = useAgent();
   const { resolvedTheme } = useTheme();
 
   return (
     <AnimatePresence mode="wait">
       {/* Welcome view */}
-      {!isConnected && (
+      {!isConnected && agentState !== 'connecting' && (
         <MotionWelcomeView
           key="welcome"
           {...VIEW_MOTION_PROPS}
@@ -47,8 +50,12 @@ export function ViewController({ appConfig }: ViewControllerProps) {
           onStartCall={start}
         />
       )}
+      {/* Connecting view */}
+      {(agentState === 'connecting' || (isConnected && !agentState)) && (
+        <MotionConnectingView key="connecting" {...VIEW_MOTION_PROPS} />
+      )}
       {/* Session view */}
-      {isConnected && (
+      {isConnected && agentState !== 'connecting' && (
         <MotionSessionView
           key="session-view"
           {...VIEW_MOTION_PROPS}

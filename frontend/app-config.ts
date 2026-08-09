@@ -33,20 +33,21 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'Murf AI',
-  pageTitle: 'Voice Agent Starter',
-  pageDescription: 'A voice agent powered by Murf Falcon — the fastest TTS API',
+  companyName: 'ArthSakhi',
+  pageTitle: 'ArthSakhi — Your Financial Literacy Voice Assistant',
+  pageDescription:
+    'अर्थसखी — Trusted guidance on Indian government schemes and safe digital banking',
 
   supportsChatInput: true,
-  supportsVideoInput: true,
-  supportsScreenShare: true,
+  supportsVideoInput: false,
+  supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
   logo: '/murf-logo.svg',
-  accent: '#6366F1',
+  accent: '#1e3a8a',
   logoDark: '/murf-logo-dark.svg',
-  accentDark: '#818cf8',
-  startButtonText: 'Start talking',
+  accentDark: '#3b82f6',
+  startButtonText: 'Start conversation',
 
   // optional: audio visualization configuration
   // audioVisualizerType: 'bar',

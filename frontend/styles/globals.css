@@ -37,6 +37,12 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* ArthSakhi brand colors */
+  --arthsakhi-primary: oklch(0.25 0.15 260);
+  --arthsakhi-secondary: oklch(0.65 0.12 200);
+  --arthsakhi-accent: oklch(0.75 0.15 60);
+  --arthsakhi-bg: oklch(0.98 0.02 60);
 }
 
 .dark {
