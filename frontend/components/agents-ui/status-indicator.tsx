@@ -46,7 +46,13 @@ export function StatusIndicator({ agentState, callEnded, className = '' }: Statu
     );
   }
 
-  if (agentState === 'connected' || agentState === 'ready') {
+  if (
+    agentState === 'idle' ||
+    agentState === 'initializing' ||
+    agentState === 'connecting' ||
+    agentState === 'pre-connect-buffering' ||
+    agentState === 'listening'
+  ) {
     return (
       <div className={`text-center ${className}`}>
         <div className="mb-4 flex justify-center">

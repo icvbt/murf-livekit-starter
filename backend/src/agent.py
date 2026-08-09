@@ -1,4 +1,10 @@
+from __future__ import annotations
+
+import asyncio
 import logging
+import re
+import uuid
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -8,44 +14,198 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RunContext,
+    UserInputTranscribedEvent,
     cli,
-    inference,
+    function_tool,
     tokenize,
     room_io,
-    UserInputTranscribedEvent,
 )
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
+from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from caller_memory import lookup_caller as db_lookup_caller
+from caller_memory import save_caller_memory as db_save_caller_memory
+from prompt import build_system_prompt
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
-SYSTEM_PROMPT = """You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate. Your responses are concise and without complex formatting, emojis, or symbols."""
+HINDI_KEYWORDS = {
+    "kya",
+    "hai",
+    "aur",
+    "main",
+    "haan",
+    "nahin",
+    "nahi",
+    "aap",
+    "namaste",
+    "shukriya",
+    "yojana",
+    "batao",
+    "bataiye",
+    "samjhao",
+    "dhan",
+    "suraksha",
+    "bima",
+    "pension",
+    "mein",
+    "ke",
+    "ki",
+    "se",
+    "ko",
+    "ka",
+    "jo",
+    "toh",
+    "bhi",
+    "ho",
+    "kar",
+    "raha",
+    "rahi",
+    "rha",
+    "rhi",
+    "mujhe",
+    "mera",
+    "meri",
+    "hum",
+    "tum",
+    "apna",
+    "apni",
+    "karke",
+    "karo",
+    "karna",
+    "tha",
+    "thi",
+    "the",
+    "ab",
+    "kab",
+    "tab",
+    "sab",
+}
+AFFIRMATIVE_PATTERNS = (
+    r"\b(haan|ha|yes|yeah|yep|sure|okay|ok|ji|theek hai|theek|save it|remember it|yaad rakh|yaad rakho|yaad rakhiye|you can remember that)\b",
+)
+NEGATIVE_PATTERNS = (
+    r"\b(no|nahin|nahi|not now|abhi nahi|skip|don't save|do not save|mat rakho|mat yaad rakho)\b",
+)
+
+
+def _is_hindi_like(transcript: str) -> bool:
+    if any(0x0900 <= ord(character) <= 0x097F for character in transcript):
+        return True
+    words = set(transcript.split())
+    return not words.isdisjoint(HINDI_KEYWORDS)
+
+
+def _is_clear_affirmative(transcript: str) -> bool:
+    return bool(re.search(AFFIRMATIVE_PATTERNS[0], transcript)) and not bool(
+        re.search(NEGATIVE_PATTERNS[0], transcript)
+    )
+
+
+def _is_clear_negative(transcript: str) -> bool:
+    return bool(re.search(NEGATIVE_PATTERNS[0], transcript))
+
+
+def _memory_context_text(memory: dict[str, Any] | None) -> str:
+    if not memory:
+        return ""
+
+    facts = memory.get("facts", {})
+    name = memory.get("name") or ""
+    language_preference = memory.get("language_preference") or ""
+    fact_lines = []
+    for key, value in facts.items():
+        fact_lines.append(f"- {key}: {value}")
+    fact_block = "\n".join(fact_lines) if fact_lines else "- none"
+
+    return (
+        "Approved caller memory is available for continuity.\n"
+        f"- name: {name}\n"
+        f"- language_preference: {language_preference}\n"
+        f"- facts:\n{fact_block}"
+    )
+
+
+async def _wait_for_remote_participant(room: rtc.Room, timeout_seconds: float = 8.0):
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if room.remote_participants:
+            return next(iter(room.remote_participants.values()))
+        await asyncio.sleep(0.1)
+    return None
 
 
 class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(instructions=SYSTEM_PROMPT)
+    def __init__(
+        self,
+        user_id: str | None = None,
+        initial_memory: dict[str, Any] | None = None,
+        db_path: str | None = None,
+    ) -> None:
+        self.user_id = user_id
+        self.initial_memory = initial_memory
+        self.db_path = db_path
+        self.memory_consent_granted = False
+        self.last_user_transcript = ""
+        instructions = build_system_prompt(initial_memory)
+        super().__init__(instructions=instructions)
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool
+    async def lookup_caller(self, context: RunContext, user_id: str) -> dict[str, Any] | None:
+        validated_user_id = user_id.strip() if isinstance(user_id, str) else ""
+        if self.user_id and validated_user_id != self.user_id:
+            validated_user_id = self.user_id
+        if not validated_user_id:
+            return None
+        return await db_lookup_caller(validated_user_id, db_path=self.db_path)
+
+    @function_tool
+    async def save_caller_memory(
+        self,
+        context: RunContext,
+        user_id: str,
+        name: str,
+        language_preference: str,
+        schemes_discussed: list[str] | None = None,
+        preferred_explanation_style: str | None = None,
+        digital_safety_interest: bool | None = None,
+    ) -> dict[str, Any]:
+        if not self.memory_consent_granted:
+            return {
+                "success": False,
+                "message": (
+                    "Main is samay aapki information save nahi kar rahi hoon, lekin hum "
+                    "conversation continue kar sakte hain."
+                ),
+            }
+
+        validated_user_id = user_id.strip() if isinstance(user_id, str) else ""
+        if self.user_id and validated_user_id != self.user_id:
+            validated_user_id = self.user_id
+        if not validated_user_id:
+            return {
+                "success": False,
+                "message": "Main is samay aapki information save nahi kar pa rahi hoon, lekin hum conversation continue kar sakte hain.",
+            }
+
+        result = await db_save_caller_memory(
+            validated_user_id,
+            name,
+            language_preference,
+            {
+                "schemes_discussed": schemes_discussed or [],
+                "preferred_explanation_style": preferred_explanation_style,
+                "digital_safety_interest": digital_safety_interest,
+            },
+            db_path=self.db_path,
+        )
+
+        if result.get("success"):
+            self.memory_consent_granted = False
+        return result
 
 
 server = AgentServer()
@@ -60,87 +220,61 @@ server.setup_fnc = prewarm
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
+    await ctx.connect()
+    remote_participant = await _wait_for_remote_participant(ctx.room)
+
+    caller_id = remote_participant.identity if remote_participant else f"session-{uuid.uuid4()}"
+    initial_memory = await db_lookup_caller(caller_id) if remote_participant else None
+
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3", language="multi"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
-                model="gemini-3.5-flash",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+            model="gemini-3.5-flash",
+        ),
         tts=murf.TTS(
-                voice="Anisha", 
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
+            voice="Anisha",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True,
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
+    assistant = Assistant(user_id=caller_id, initial_memory=initial_memory)
+
+    if initial_memory and initial_memory.get("language_preference") in {"Hindi", "Hinglish"}:
+        session.tts.update_options(voice="hi-IN-anisha")
+    elif initial_memory and initial_memory.get("language_preference") == "English":
+        session.tts.update_options(voice="en-IN-anisha")
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(ev: UserInputTranscribedEvent):
-        transcript = ev.transcript.strip().lower()
+        transcript = ev.transcript.strip()
+        lowered_transcript = transcript.lower()
         if not transcript:
             return
-        # Check for Devanagari script characters (native Hindi)
-        has_devanagari = any(ord(c) >= 0x0900 and ord(c) <= 0x097F for c in transcript)
 
-        # Check for common Hinglish/Hindi romanized keywords
-        hindi_keywords = {
-            "kya", "hai", "aur", "main", "haan", "nahin", "aap", "namaste", "shukriya", 
-            "yojana", "batao", "bataiye", "samjhao", "dhan", "suraksha", "bima", "pension",
-            "mein", "ke", "ki", "se", "ko", "ka", "jo", "toh", "bhi", "ho", "kar", "raha",
-            "rahi", "rha", "rhi", "mujhe", "mera", "meri", "hum", "tum", "apna", "apni",
-            "karke", "karo", "karna", "tha", "thi", "the", "ab", "kab", "tab", "sab"
-        }
-        words = set(transcript.split())
-        has_hindi_words = not words.isdisjoint(hindi_keywords)
+        assistant.last_user_transcript = transcript
+        if _is_clear_affirmative(lowered_transcript):
+            assistant.memory_consent_granted = True
+        elif _is_clear_negative(lowered_transcript):
+            assistant.memory_consent_granted = False
 
-        if has_devanagari or has_hindi_words:
-            logger.info(f"Detected Hindi/Hinglish speech: '{ev.transcript}'. Switching TTS to hi-IN-anisha.")
+        if _is_hindi_like(lowered_transcript):
+            logger.info("Detected Hindi/Hinglish speech. Switching TTS to hi-IN-anisha.")
             session.tts.update_options(voice="hi-IN-anisha")
         else:
-            logger.info(f"Detected English speech: '{ev.transcript}'. Switching TTS to en-IN-anisha.")
+            logger.info("Detected English speech. Switching TTS to en-IN-anisha.")
             session.tts.update_options(voice="en-IN-anisha")
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
-    # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -153,9 +287,6 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
-
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":
