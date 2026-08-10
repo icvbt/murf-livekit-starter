@@ -26,6 +26,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from caller_memory import lookup_caller as db_lookup_caller
 from caller_memory import save_caller_memory as db_save_caller_memory
+from scheme_eligibility import SchemeEligibilityAnswers, check_scheme_eligibility
 from prompt import build_system_prompt
 
 logger = logging.getLogger("agent")
@@ -206,6 +207,26 @@ class Assistant(Agent):
         if result.get("success"):
             self.memory_consent_granted = False
         return result
+
+    @function_tool
+    async def check_scheme_eligibility(
+        self,
+        context: RunContext,
+        scheme_id: str,
+        answers: SchemeEligibilityAnswers,
+    ) -> dict[str, Any]:
+        """Check general, non-binding eligibility guidance for a supported Indian
+        government financial scheme using non-sensitive information voluntarily
+        provided by the caller. Call it when the caller asks whether they may
+        qualify, asks for general eligibility information, or asks about commonly
+        required documents and next steps. Do not call it for account status,
+        application tracking, approval confirmation, transaction status, loan
+        decisions, personalized investment advice, or requests involving OTPs,
+        PINs, passwords, card details, account numbers, Aadhaar, PAN, or other
+        sensitive identifiers. The result is informational only and includes dated
+        source information.
+        """
+        return check_scheme_eligibility(scheme_id, dict(answers))
 
 
 server = AgentServer()

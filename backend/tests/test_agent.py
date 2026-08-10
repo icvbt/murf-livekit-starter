@@ -10,6 +10,7 @@ from livekit.agents import AgentSession, inference, llm
 
 from agent import Assistant
 from caller_memory import initialize_database, lookup_caller, save_caller_memory
+from scheme_eligibility import check_scheme_eligibility
 from prompt import build_system_prompt
 
 
@@ -346,3 +347,186 @@ async def test_returning_caller_is_greeted_by_name_in_correct_language() -> None
         )
 
         result.expect.no_more_events()
+
+
+def test_valid_scheme_lookup_returns_structured_result() -> None:
+    result = check_scheme_eligibility(
+        "PMJDY",
+        {
+            "age": 24,
+            "state_or_union_territory": "Karnataka",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["scheme_id"] == "pmjdy"
+    assert result["scheme_name"] == "Pradhan Mantri Jan Dhan Yojana"
+    assert result["result"] == "appears_possible"
+    assert result["source_name"] == "myScheme"
+    assert result["source_url"] == "https://www.myscheme.gov.in/"
+    assert result["data_status"] == "local_curated_dataset"
+    assert result["retrieved_at"] == "2026-08-10"
+    assert result["last_verified"] == "2026-08-10"
+    assert result["document_checklist"]
+
+
+def test_appears_possible_result_for_apy() -> None:
+    result = check_scheme_eligibility("APY", {"age": 30})
+
+    assert result["success"] is True
+    assert result["result"] == "appears_possible"
+    assert result["scheme_name"] == "Atal Pension Yojana"
+    assert result["matched_rules"]
+    assert "official approval" in result["disclaimer"].lower()
+
+
+def test_appears_unlikely_result_for_pmsby() -> None:
+    result = check_scheme_eligibility("PMSBY", {"age": 75})
+
+    assert result["success"] is True
+    assert result["result"] == "appears_unlikely"
+    assert result["unmatched_rules"]
+
+
+def test_missing_answers_returns_followup_needed() -> None:
+    result = check_scheme_eligibility("PMJDY", {"age": 21})
+
+    assert result["success"] is True
+    assert result["result"] == "needs_more_information"
+    assert "state_or_union_territory" in result["missing_answers"]
+
+
+def test_unknown_scheme_returns_scheme_not_found() -> None:
+    result = check_scheme_eligibility("unknown-scheme", {"age": 21})
+
+    assert result["success"] is False
+    assert result["result"] == "scheme_not_found"
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        "not-a-dict",
+        {"age": "abc"},
+        {"age_group": "very_young"},
+    ],
+)
+def test_invalid_input_returns_validation_error(answers) -> None:
+    result = check_scheme_eligibility("PMJDY", answers)
+
+    assert result["success"] is False
+    assert result["result"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"aadhaar_number": "123456789012"},
+        {"pan": "ABCDE1234F"},
+        {"account_number": "123456789012345"},
+        {"otp": "123456"},
+        {"pin": "1234"},
+        {"password": "secret"},
+        {"cvv": "123"},
+    ],
+)
+def test_sensitive_field_rejection(answers) -> None:
+    result = check_scheme_eligibility("PMJDY", answers)
+
+    assert result["success"] is False
+    assert result["result"] == "validation_error"
+
+
+def test_source_and_data_date_in_response() -> None:
+    result = check_scheme_eligibility("SSY", {"age": 4, "is_girl_child_scheme": True})
+
+    assert result["source_name"] == "myScheme"
+    assert result["source_url"] == "https://www.myscheme.gov.in/"
+    assert result["retrieved_at"] == "2026-08-10"
+    assert result["last_verified"] == "2026-08-10"
+    assert result["effective_from"] is None
+
+
+def test_local_dataset_fallback_returns_source_unavailable() -> None:
+    with patch("scheme_eligibility._load_dataset", side_effect=OSError("broken")):
+        result = check_scheme_eligibility("PMJDY", {"age": 21, "state_or_union_territory": "Karnataka"})
+
+    assert result["success"] is False
+    assert result["result"] == "source_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_agent_calls_tool_for_eligibility_question() -> None:
+    async with (
+        _llm() as model,
+        AgentSession(llm=model) as session,
+    ):
+        assistant = Assistant(user_id="caller_test_14")
+        await session.start(assistant)
+
+        with patch(
+            "agent.check_scheme_eligibility",
+            return_value={
+                "success": True,
+                "scheme_id": "pmjdy",
+                "scheme_name": "Pradhan Mantri Jan Dhan Yojana",
+                "result": "appears_possible",
+                "matched_rules": ["General guidance matches the available rules."],
+                "missing_answers": [],
+                "unmatched_rules": [],
+                "document_checklist": ["Verify currently accepted documents with the participating bank."],
+                "next_steps": ["Confirm current eligibility through the official source or participating bank."],
+                "source_name": "myScheme",
+                "source_url": "https://www.myscheme.gov.in/",
+                "data_status": "local_curated_dataset",
+                "retrieved_at": "2026-08-10",
+                "last_verified": "2026-08-10",
+                "effective_from": None,
+                "disclaimer": "This is general guidance, not official approval.",
+                "spoken_response": "आपके द्वारा दी गई सामान्य जानकारी के आधार पर, यह स्कीम आपके लिए संभव हो सकती है। यह official approval नहीं है। कृपया final eligibility official government portal या participating bank से verify करें।",
+            },
+        ) as mock_tool:
+            result = await session.run(user_input="Am I eligible for PMJDY? I am 24 and live in Karnataka.")
+
+            result.expect.next_event().is_function_call(name="check_scheme_eligibility")
+            result.expect.next_event().is_function_call_output()
+
+            await (
+                result.expect.next_event()
+                .is_message(role="assistant")
+                .judge(
+                    model,
+                    intent=(
+                        "Respond naturally in Hindi or Hinglish, mention that this is not official approval,"
+                        " and do not read raw JSON aloud."
+                    ),
+                )
+            )
+
+            assert mock_tool.called
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_call_tool_for_account_question() -> None:
+    async with (
+        _llm() as model,
+        AgentSession(llm=model) as session,
+    ):
+        assistant = Assistant(user_id="caller_test_15")
+        await session.start(assistant)
+
+        with patch("agent.check_scheme_eligibility", wraps=check_scheme_eligibility) as mock_tool:
+            result = await session.run(user_input="What is my bank balance?")
+
+            await (
+                result.expect.next_event()
+                .is_message(role="assistant")
+                .judge(
+                    model,
+                    intent=(
+                        "Refuse safely, avoid account access claims, and direct the user to an official bank channel."
+                    ),
+                )
+            )
+
+            assert not mock_tool.called
