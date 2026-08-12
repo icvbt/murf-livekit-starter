@@ -27,6 +27,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from caller_memory import lookup_caller as db_lookup_caller
 from caller_memory import save_caller_memory as db_save_caller_memory
 from scheme_eligibility import SchemeEligibilityAnswers, check_scheme_eligibility
+from escalation_store import create_escalation as db_create_escalation
 from prompt import build_system_prompt
 
 logger = logging.getLogger("agent")
@@ -150,6 +151,7 @@ class Assistant(Agent):
         self.initial_memory = initial_memory
         self.db_path = db_path
         self.memory_consent_granted = False
+        self.escalation_consent_granted = False
         self.last_user_transcript = ""
         instructions = build_system_prompt(initial_memory)
         super().__init__(instructions=instructions)
@@ -229,6 +231,61 @@ class Assistant(Agent):
         return check_scheme_eligibility(scheme_id, dict(answers))
 
 
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        issue_type: str,
+        summary: str,
+        checked_information: list[str],
+        urgency: str,
+        language_preference: str,
+        preferred_follow_up_method: str,
+        consent_given: bool,
+    ) -> dict[str, Any]:
+        """
+        Create a limited human-support request only when the caller reports suspected
+        fraud, an unauthorized transaction, an account-specific issue, a disputed
+        charge, an application decision, or a request for professional financial advice.
+
+        Ask for explicit permission before using this tool. Share only a short summary,
+        what ArthSakhi already checked, urgency, language, and preferred follow-up method.
+
+        Never include OTPs, UPI PINs, ATM PINs, passwords, CVVs, card numbers,
+        bank-account numbers, Aadhaar, PAN, transaction IDs, balances, loan numbers,
+        insurance policy numbers, or full conversation transcripts.
+
+        Do not use this tool for normal financial education, scheme explanations,
+        or general eligibility questions.
+        """
+
+        if not consent_given or not self.escalation_consent_granted:
+            return {
+                "success": False,
+                "error": "consent_required",
+                "message": (
+                    "I need the caller's clear permission before creating a "
+                    "human-support request."
+                ),
+            }
+
+        validated_user_id = self.user_id or "unknown-session"
+
+        result = await asyncio.to_thread(
+            db_create_escalation,
+            validated_user_id,
+            issue_type,
+            summary,
+            checked_information,
+            urgency,
+            language_preference,
+            preferred_follow_up_method,
+            True,
+        )
+
+        self.escalation_consent_granted = False
+        return result
+
 server = AgentServer()
 
 
@@ -284,8 +341,10 @@ async def my_agent(ctx: JobContext):
         assistant.last_user_transcript = transcript
         if _is_clear_affirmative(lowered_transcript):
             assistant.memory_consent_granted = True
+            assistant.escalation_consent_granted = True
         elif _is_clear_negative(lowered_transcript):
             assistant.memory_consent_granted = False
+            assistant.escalation_consent_granted = False
 
         if _is_hindi_like(lowered_transcript):
             logger.info("Detected Hindi/Hinglish speech. Switching TTS to hi-IN-anisha.")
