@@ -26,9 +26,14 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from caller_memory import lookup_caller as db_lookup_caller
 from caller_memory import save_caller_memory as db_save_caller_memory
-from scheme_eligibility import SchemeEligibilityAnswers, check_scheme_eligibility
 from escalation_store import create_escalation as db_create_escalation
 from prompt import build_system_prompt
+from scheme_eligibility import SchemeEligibilityAnswers, check_scheme_eligibility
+from scheme_specialist import (
+    SchemeSpecialist,
+    build_safe_handoff_context,
+    handoff_announcement,
+)
 
 logger = logging.getLogger("agent")
 
@@ -285,6 +290,67 @@ class Assistant(Agent):
 
         self.escalation_consent_granted = False
         return result
+
+    @function_tool
+    async def transfer_to_scheme_specialist(
+        self,
+        context: RunContext,
+        user_question: str,
+        conversation_summary: str,
+        language_preference: str,
+        scheme_name: str | None = None,
+        known_non_sensitive_answers: SchemeEligibilityAnswers | None = None,
+    ) -> dict[str, Any]:
+        """Transfer the caller to the Government Scheme Eligibility Specialist when
+        the caller asks a scheme-specific question about a supported Indian
+        government scheme's eligibility, required documents, or basic
+        scheme-specific application guidance.
+
+        Use this tool only for scheme-specific questions.
+
+        Do not use it for general financial-literacy questions, fraud or
+        unauthorized transactions, account-specific banking issues, OTPs, PINs,
+        passwords, CVVs, card numbers, account numbers, Aadhaar, PAN, outbound
+        reminders, or general human escalation.
+
+        Pass the caller's latest question, a short safe conversation summary,
+        language preference, scheme name if known, and any already-collected
+        non-sensitive answers. Never pass sensitive data, full transcripts, or
+        raw audio.
+        """
+        try:
+            safe_context = build_safe_handoff_context(
+                user_question=user_question,
+                conversation_summary=conversation_summary,
+                language_preference=language_preference,
+                scheme_name=scheme_name,
+                known_non_sensitive_answers=known_non_sensitive_answers,
+            )
+        except ValueError:
+            return {
+                "success": False,
+                "message": (
+                    "A safe summary of the caller's question is required before "
+                    "transferring."
+                ),
+            }
+
+        specialist = SchemeSpecialist(**safe_context)
+
+        await context.session.say(
+            handoff_announcement(safe_context["language_preference"]),
+            allow_interruptions=False,
+        )
+
+        context.session.update_agent(specialist)
+
+        return {
+            "success": True,
+            "message": (
+                "The conversation has been handed to the Government Scheme "
+                "Eligibility Specialist."
+            ),
+        }
 
 server = AgentServer()
 
