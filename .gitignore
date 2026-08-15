@@ -1,9 +1,0 @@
-.env
-.env.*
-!.env.example
-.DS_Store
-node_modules
-livekit-server.exe
-backend/data/*.sqlite3
-backend/data/*.sqlite3-shm
-backend/data/*.sqlite3-wal
