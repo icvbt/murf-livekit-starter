@@ -1,6 +1,6 @@
-# Backend — Voice Agent with Murf Falcon TTS
+# Backend — ArthSakhi Voice Agent with Murf Falcon TTS
 
-The Python backend for the Voice Agent Starter. It runs a real-time voice AI pipeline using [LiveKit Agents](https://docs.livekit.io/agents), connecting Murf Falcon TTS, Deepgram STT, and Google Gemini into a single conversational agent.
+The Python backend for ArthSakhi. It runs a real-time voice AI pipeline using [LiveKit Agents](https://docs.livekit.io/agents), connecting Murf Falcon TTS, Deepgram STT, and Google Gemini into a single conversational agent.
 
 ## How It Works
 
@@ -9,6 +9,154 @@ User speaks → [Deepgram STT] → text → [Gemini LLM] → response → [Murf 
 ```
 
 LiveKit handles the real-time audio transport. The agent connects to LiveKit as a participant, listens for user speech, and responds with synthesized audio.
+
+## Day 5: Scheme Eligibility Tool
+
+Day 5 adds one real financial-domain function call: `check_scheme_eligibility`.
+
+### Tool signature
+
+```python
+check_scheme_eligibility(scheme_id: str, answers: dict) -> dict
+```
+
+### Tool description
+
+This function checks general, non-binding eligibility guidance for a supported Indian government financial scheme using non-sensitive information voluntarily provided by the caller. Call it when the caller asks whether they may qualify, asks for general eligibility information, or asks about commonly required documents and next steps. Do not call it for account status, application tracking, approval confirmation, transaction status, loan decisions, personalized investment advice, or requests involving OTPs, PINs, passwords, card details, account numbers, Aadhaar, PAN, or other sensitive identifiers. The result is informational only and includes dated source information.
+
+### Supported schemes
+
+- PMJDY
+- PMSBY
+- PMJJBY
+- APY
+- SSY
+
+### Accepted inputs
+
+The tool accepts only non-sensitive fields such as:
+
+- `age`
+- `age_group`
+- `state_or_union_territory`
+- `residency_status`
+- `occupation_category`
+- `is_girl_child_scheme`
+- `is_girl_child`
+
+### Rejected inputs
+
+The tool rejects sensitive financial or identity data, including:
+
+- Aadhaar number
+- PAN number
+- Bank-account number
+- Card number
+- OTP
+- UPI PIN
+- ATM PIN
+- Password
+- CVV
+- Loan account number
+- Insurance policy number
+- Transaction ID
+- Account balance
+- Full phone number
+- Login credentials
+
+### Data source
+
+Day 5 uses a local curated dataset because a stable documented government eligibility API was not configured. Each record includes its source URL and verification date. Results are informational only. Users must verify current eligibility, documents, benefits, and application steps through the official government portal or participating bank.
+
+The dataset lives at [data/schemes.json](data/schemes.json) and is marked as `local_curated_dataset`.
+
+Source URL: `https://www.myscheme.gov.in/`
+
+Retrieval and verification dates:
+
+- `retrieved_at`: `2026-08-10`
+- `last_verified`: `2026-08-10`
+- `effective_from`: `null`
+
+### How the agent calls it
+
+The Gemini prompt instructs the agent to call `check_scheme_eligibility` automatically when the user asks a supported eligibility question, and not to call it for account/balance/transaction/approval questions. The returned structured data is summarized into natural speech. Raw JSON is never spoken.
+
+### Spoken responses
+
+Examples:
+
+- Appears possible: “आपके द्वारा दी गई सामान्य जानकारी के आधार पर, यह स्कीम आपके लिए संभव हो सकती है। यह official approval नहीं है। कृपया final eligibility official government portal या participating bank से verify करें।”
+- Appears unlikely: “आपके द्वारा दी गई जानकारी के आधार पर, यह स्कीम शायद match नहीं करती। Final confirmation official source या concerned bank ही दे सकता है।”
+- Needs more information: “Eligibility समझने के लिए मुझे एक और सामान्य जानकारी चाहिए। आपकी state या Union Territory कौन-सी है?”
+- Source unavailable: “इस समय scheme data उपलब्ध नहीं है। मैं अनुमान लगाकर जवाब नहीं दूंगी। कृपया official government portal या bank branch से जानकारी verify करें।”
+
+### Failure behavior
+
+The tool handles missing files, invalid JSON, invalid inputs, and source failures without exposing stack traces. If the dataset cannot be loaded, the function returns `source_unavailable` and the assistant speaks a fallback instead of inventing an answer.
+
+### Limitations
+
+- The Day 5 implementation uses a local curated dataset, not a live official API.
+- The result is guidance only, not official approval.
+- Users still need to verify current rules, documents, and application steps with the official portal or participating bank.
+
+## Day 9: Government Scheme Eligibility Specialist (Agent Handoff)
+
+Day 9 adds a second agent: the **Government Scheme Eligibility Specialist** (`SchemeSpecialist`), defined in [`src/scheme_specialist.py`](src/scheme_specialist.py).
+
+### Role of the specialist
+
+Its only job is to help callers with:
+
+- Government-scheme eligibility.
+- Required documents.
+- Basic scheme-specific guidance.
+
+It must not handle general financial-literacy questions, fraud or unauthorized transactions, account-specific banking issues, OTPs/PINs/passwords/CVVs/account numbers/Aadhaar/PAN, outbound reminders, or general human escalation.
+
+### Handoff tool
+
+The main ArthSakhi agent (`Assistant`) exposes the tool:
+
+```
+transfer_to_scheme_specialist(
+    user_question, conversation_summary, language_preference,
+    scheme_name?, known_non_sensitive_answers?
+)
+```
+
+The tool:
+
+1. Builds a safe context from the caller's latest question, a short conversation summary, language preference, scheme name (if known), and only non-sensitive eligibility answers.
+2. Speaks the required announcement — *"I'll connect you to our government-scheme eligibility specialist so you can receive more focused guidance."* (or the Hindi/Hinglish variant) — before switching.
+3. Uses the installed LiveKit Agents `AgentSession.update_agent(...)` API to switch to the specialist in the same call. No second call, no disconnect, same room and participant.
+
+### Routing conditions
+
+- **Handle in the main agent (no handoff):** general financial-literacy explanations ("What does financial literacy mean?"), general scam-avoidance education, general scheme explanations.
+- **Transfer to the specialist:** "Am I eligible for PMJDY?", "What documents are needed for PMSBY?", "Can I apply for this government financial scheme?", "What are the basic requirements for this scheme?".
+- **Never transfer:** fraud, unauthorized transactions, account-specific issues, OTP/PIN/password/card/account questions, outbound reminders, general human escalation (these use the existing Day 7 escalation flow).
+
+### Context passed
+
+The specialist receives only:
+
+- `user_question` — the caller's latest question.
+- `conversation_summary` — a short safe summary.
+- `language_preference` — Hindi, Hinglish, or English.
+- `scheme_name` — if known.
+- `known_non_sensitive_answers` — only non-sensitive eligibility fields already collected.
+
+Sensitive data is filtered: disallowed answer keys, sensitive value patterns (OTPs, PINs, Aadhaar, PAN, card/account numbers, etc.) and full transcripts/audio are never passed. The specialist continues without asking the caller to repeat the problem.
+
+### Reuse
+
+The specialist reuses the existing Day 5 `check_scheme_eligibility` function and the same `data/schemes.json` dataset. No duplicate eligibility logic was added.
+
+### Handoff method used
+
+`AgentSession.update_agent(specialist)` — the in-call agent-switch API of the installed `livekit-agents ~1.4` SDK. Confirmed by inspecting the installed version. The handoff inserts an `AgentHandoff` item into the session chat context and keeps the conversation, room, and audio pipeline intact.
 
 ## Setup
 
@@ -185,6 +333,28 @@ uv run pytest
 ```
 
 Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests).
+
+Day 5 adds direct tests for the scheme eligibility helper, source metadata, validation failures, local dataset fallback, and two agent-level behavior checks: one for eligibility questions and one for account/balance questions.
+
+Day 9 adds [`tests/test_scheme_specialist.py`](tests/test_scheme_specialist.py) with focused tests that verify:
+
+- The `transfer_to_scheme_specialist` tool is registered and has a clear description.
+- The specialist is a separate agent with its own narrower instructions.
+- Handoff context preserves the question, summary, language, and scheme name.
+- Sensitive data is excluded from the handoff context.
+- No duplicate call-outcome/memory/escalation records are created on handoff.
+- A general question stays with the main agent (no handoff).
+- A scheme question triggers the specialist handoff (LLM-judged, exercises the real `update_agent` switch).
+- A fraud question uses the existing escalation flow (no handoff).
+
+To run just the backend checks:
+
+```bash
+uv run python -m compileall src
+uv run pytest
+```
+
+The eligibility tests do not require a live government API because the project uses the local curated dataset described above.
 
 To run tests in CI, you'll need to add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as repository secrets.
 

@@ -1,0 +1,150 @@
+[
+  {
+    "scheme_id": "pmjdy",
+    "scheme_name": "Pradhan Mantri Jan Dhan Yojana",
+    "short_description": "General financial-access scheme information.",
+    "eligibility_rules": {
+      "required_answer_keys": ["age", "state_or_union_territory"],
+      "known_rules": [
+        {
+          "field": "age",
+          "type": "minimum",
+          "value": 10,
+          "message": "General guidance suggests this scheme is considered from age 10 and above."
+        }
+      ]
+    },
+    "document_checklist": [
+      "Verify currently accepted documents with the participating bank."
+    ],
+    "next_steps": [
+      "Confirm current eligibility through the official source or participating bank."
+    ],
+    "source_name": "myScheme",
+    "source_url": "https://www.myscheme.gov.in/",
+    "data_status": "local_curated_dataset",
+    "retrieved_at": "2026-08-10",
+    "last_verified": "2026-08-10",
+    "effective_from": null
+  },
+  {
+    "scheme_id": "pmsby",
+    "scheme_name": "Pradhan Mantri Suraksha Bima Yojana",
+    "short_description": "General insurance-scheme guidance.",
+    "eligibility_rules": {
+      "required_answer_keys": ["age"],
+      "known_rules": [
+        {
+          "field": "age",
+          "type": "range",
+          "minimum": 18,
+          "maximum": 70,
+          "message": "General guidance suggests this scheme is considered for adults from age 18 through 70."
+        }
+      ]
+    },
+    "document_checklist": [
+      "Verify currently accepted documents with the participating bank."
+    ],
+    "next_steps": [
+      "Confirm current eligibility through the official source or participating bank."
+    ],
+    "source_name": "myScheme",
+    "source_url": "https://www.myscheme.gov.in/",
+    "data_status": "local_curated_dataset",
+    "retrieved_at": "2026-08-10",
+    "last_verified": "2026-08-10",
+    "effective_from": null
+  },
+  {
+    "scheme_id": "pmjjby",
+    "scheme_name": "Pradhan Mantri Jeevan Jyoti Bima Yojana",
+    "short_description": "General life-insurance scheme guidance.",
+    "eligibility_rules": {
+      "required_answer_keys": ["age"],
+      "known_rules": [
+        {
+          "field": "age",
+          "type": "range",
+          "minimum": 18,
+          "maximum": 50,
+          "message": "General guidance suggests this scheme is considered for adults from age 18 through 50."
+        }
+      ]
+    },
+    "document_checklist": [
+      "Verify currently accepted documents with the participating bank."
+    ],
+    "next_steps": [
+      "Confirm current eligibility through the official source or participating bank."
+    ],
+    "source_name": "myScheme",
+    "source_url": "https://www.myscheme.gov.in/",
+    "data_status": "local_curated_dataset",
+    "retrieved_at": "2026-08-10",
+    "last_verified": "2026-08-10",
+    "effective_from": null
+  },
+  {
+    "scheme_id": "apy",
+    "scheme_name": "Atal Pension Yojana",
+    "short_description": "General pension-scheme guidance.",
+    "eligibility_rules": {
+      "required_answer_keys": ["age"],
+      "known_rules": [
+        {
+          "field": "age",
+          "type": "range",
+          "minimum": 18,
+          "maximum": 40,
+          "message": "General guidance suggests this scheme is considered for adults from age 18 through 40."
+        }
+      ]
+    },
+    "document_checklist": [
+      "Verify currently accepted documents with the participating bank."
+    ],
+    "next_steps": [
+      "Confirm current eligibility through the official source or participating bank."
+    ],
+    "source_name": "myScheme",
+    "source_url": "https://www.myscheme.gov.in/",
+    "data_status": "local_curated_dataset",
+    "retrieved_at": "2026-08-10",
+    "last_verified": "2026-08-10",
+    "effective_from": null
+  },
+  {
+    "scheme_id": "ssy",
+    "scheme_name": "Sukanya Samriddhi Yojana",
+    "short_description": "General girl-child savings scheme guidance.",
+    "eligibility_rules": {
+      "required_answer_keys": ["age", "is_girl_child_scheme"],
+      "known_rules": [
+        {
+          "field": "is_girl_child_scheme",
+          "type": "required_true",
+          "message": "General guidance suggests this scheme is intended for a girl child."
+        },
+        {
+          "field": "age",
+          "type": "maximum",
+          "value": 10,
+          "message": "General guidance suggests this scheme is considered up to age 10 for the girl child."
+        }
+      ]
+    },
+    "document_checklist": [
+      "Verify currently accepted documents with the participating bank."
+    ],
+    "next_steps": [
+      "Confirm current eligibility through the official source or participating bank."
+    ],
+    "source_name": "myScheme",
+    "source_url": "https://www.myscheme.gov.in/",
+    "data_status": "local_curated_dataset",
+    "retrieved_at": "2026-08-10",
+    "last_verified": "2026-08-10",
+    "effective_from": null
+  }
+]

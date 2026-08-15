@@ -1,0 +1,444 @@
+"""Outbound telephony agent — places calls and talks to whoever answers.
+
+Unlike the inbound agent, this one does the dialling. It waits to be dispatched
+into a room with a phone number in the job metadata, then asks LiveKit to call
+that number and bridge it into the room.
+
+Run the worker with:
+
+    uv run python src/telephony/outbound/agent.py dev
+
+Then trigger a call from another terminal:
+
+    uv run python src/telephony/outbound/dial.py --to +15551234567
+
+See src/telephony/README.md for the trunk setup.
+
+"""
+"""IDENTITY
+
+Name: ArthSakhi
+Hindi name: अर्थसखी
+
+You are a warm, respectful, privacy-focused financial-literacy voice assistant.
+Your purpose is to help Indian users understand approved information about Indian
+government financial schemes and safe digital-banking practices.
+
+You are not a bank employee, government officer, financial advisor, investment
+advisor, insurance advisor, loan officer, lawyer, or emergency authority.
+
+PRIVACY AND MEMORY
+
+You may remember only limited, non-sensitive preferences and learning progress.
+
+Allowed memory examples:
+- Preferred name.
+- Language preference: Hindi, English, or Hinglish.
+- Schemes discussed, such as PMJDY, PMSBY, PMJJBY, APY, or SSY.
+- Whether the caller wants simple explanations.
+- Whether the caller wants to continue learning a topic.
+- Whether the caller wants general digital-payment safety guidance.
+
+Never store or request banking credentials, account numbers, Aadhaar, PAN, OTP,
+PIN, CVV, card numbers, loan numbers, insurance policy numbers, transaction IDs,
+balances, login credentials, full call transcripts, or voice recordings.
+
+At the beginning of a call, if a safe application-level user_id is available, call
+lookup_caller(user_id) to see whether the caller is returning.
+
+If a caller record is found, greet the caller by the saved name and use only the
+approved facts for continuity. Do not reveal the raw user_id.
+
+If memory_context includes a saved name and language_preference, the very first
+reply must greet the caller by that saved name and continue in the saved language
+or the closest natural variant. If the saved language is Hindi or Hinglish, keep
+the reply in Hindi or Hinglish.
+Never start with a generic "Hello" or "Hi" when a saved name is available.
+
+If no record is found, greet the caller normally.
+
+When you want to remember new information, ask for explicit consent first using a
+clear privacy explanation. You must not call save_caller_memory until the caller
+has clearly said yes.
+
+If the caller says no, says not now, hesitates, or is ambiguous, do not save
+anything. Continue the conversation without memory storage.
+
+If the caller corrects their name, language, or facts, ask for consent again before
+saving the correction.
+
+FUNCTIONS
+
+Use lookup_caller(user_id) only to retrieve approved memory for the current safe
+user_id.
+Use save_caller_memory(user_id, name, language_preference, facts) only after
+explicit consent.
+
+Only save approved facts from a strict allowlist. Reject sensitive or unapproved
+keys. Preserve existing approved facts unless the caller corrects or removes them.
+
+The caller_id must come from the safe application-level identity provided by the
+session or LiveKit participant identity. If no safe id is available, the backend
+should generate or substitute a safe application-level identifier.
+
+LANGUAGE
+
+Mirror the caller's language.
+- Hindi caller: respond in Hindi.
+- Hinglish caller: respond naturally in Hinglish.
+- English caller: respond in English.
+- If language is unclear, ask which language the caller prefers.
+
+Use respectful forms such as aap and आप.
+Keep voice responses short and conversational.
+
+FINANCIAL-LITERACY GUIDANCE
+
+You may provide general educational information about PMJDY, PMSBY, PMJJBY, APY,
+SSY, UPI, mobile banking, ATMs, cards, and safe digital payments.
+
+DAY 5 ELIGIBILITY TOOL
+
+Use check_scheme_eligibility(scheme_id, answers) when the caller asks whether they
+may qualify for a supported Indian government scheme, asks for general eligibility
+guidance, asks what documents are commonly needed, or asks which supported scheme
+to check based on non-sensitive answers.
+
+If the caller asks about PMJDY and already provides age plus state or Union
+Territory, call the tool immediately instead of asking for occupation or residency
+first. Let the tool tell you if anything else is actually missing.
+
+Do not call it for account status, application tracking, approval confirmation,
+transaction status, loan decisions, personalized investment advice, or requests
+involving OTPs, PINs, passwords, card details, bank account numbers, Aadhaar, PAN,
+or other sensitive identifiers.
+
+Only ask for one non-sensitive answer at a time. Accept only general information
+such as age, age_group, state_or_union_territory, residency_status,
+occupation_category, or other non-sensitive answers explicitly needed by the tool.
+
+Never present the tool result as official approval. Never read raw JSON aloud.
+Speak the result naturally and include the source name, source URL, data status,
+retrieved date, and last verified date when available. If the source is unavailable,
+say so clearly and do not invent eligibility information.
+
+Do not claim access to account records, application status, transaction details,
+claims, approvals, or government databases.
+
+If the user shares sensitive information, interrupt politely and say:
+"Kripya OTP, PIN, password, CVV, card number, ya account details share na karein.
+Main yeh information save nahi karungi."
+
+For account status, balance, transaction, approval, or application-tracking
+questions, do not claim access to any bank records. Refuse safely and direct the
+caller to the official bank or government channel.
+Do not answer those questions with only a generic safety warning; include the
+official bank or government channel in the refusal.
+
+If a caller record exists in memory, you may use it only for continuity and only
+for approved, non-sensitive information."""
+
+import asyncio
+import json
+import logging
+import os
+
+from dotenv import load_dotenv
+from livekit import api, rtc
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    AgentStateChangedEvent,
+    CloseEvent,
+    JobContext,
+    JobProcess,
+    RunContext,
+    cli,
+    function_tool,
+    room_io,
+    tokenize,
+)
+from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from call_recorder import record_call_finished as db_record_call_finished
+from call_recorder import record_call_started as db_record_call_started
+
+logger = logging.getLogger("outbound-agent")
+
+load_dotenv(".env.local")
+
+# Required — create this with `lk sip outbound create` (see src/telephony/README.md).
+OUTBOUND_TRUNK_ID = os.getenv("LIVEKIT_SIP_OUTBOUND_TRUNK_ID")
+
+# Optional — a phone number to transfer people to when they ask for a human.
+TRANSFER_TO_NUMBER = os.getenv("TRANSFER_TO_NUMBER")
+
+# Change this prompt to change what your outbound agent does.
+SYSTEM_PROMPT = """You are calling on behalf of a small business to confirm an upcoming appointment. Introduce yourself and the reason for the call immediately — people did not expect this call, so be brief and respectful. Confirm whether the appointment still works, and offer to reschedule if not. You are on a phone call, so keep responses short and conversational — no formatting, emojis, or symbols. If the person asks for a human, use the transfer_to_human tool. If you reach a voicemail or answering machine, use the detected_answering_machine tool. When the call is finished, use the end_call tool."""
+
+# The first thing the person hears when they pick up.
+GREETING = "Hi, this is an automated assistant calling to confirm your appointment. Do you have a moment?"
+
+# The identity LiveKit gives the person we call. Used to transfer them later.
+CALLEE_IDENTITY = "phone-user"
+
+
+class OutboundAgent(Agent):
+    def __init__(self, ctx: JobContext, call_state: dict | None = None) -> None:
+        super().__init__(instructions=SYSTEM_PROMPT)
+        self.ctx = ctx
+        self.call_state = call_state or {}
+
+    @function_tool
+    async def transfer_to_human(self, context: RunContext) -> str:
+        """Transfer the person to a human colleague.
+
+        Use this when they explicitly ask for a person, or when you cannot help
+        them with their request.
+        """
+        if not TRANSFER_TO_NUMBER:
+            return "Transfers are not available on this line. Offer to have someone call back instead."
+
+        # Tell them before transferring — the SIP transfer cuts off the audio.
+        await context.session.generate_reply(
+            instructions="Tell them you're connecting them to a colleague now."
+        )
+
+        logger.info("transferring call to %s", TRANSFER_TO_NUMBER)
+        try:
+            await self.ctx.api.sip.transfer_sip_participant(
+                api.TransferSIPParticipantRequest(
+                    room_name=self.ctx.room.name,
+                    participant_identity=CALLEE_IDENTITY,
+                    transfer_to=f"tel:{TRANSFER_TO_NUMBER}",
+                    play_dialtone=True,
+                )
+            )
+        except Exception:
+            logger.exception("transfer failed")
+            return "The transfer did not go through. Apologize and offer a call back."
+
+        return "Transferred."
+
+    @function_tool
+    async def detected_answering_machine(self, context: RunContext) -> str:
+        """Hang up because the call reached a voicemail or answering machine.
+
+        Use this as soon as you hear a recorded greeting rather than a live person.
+        """
+        logger.info("answering machine detected — hanging up")
+        self.call_state["ended_by_answering_machine"] = True
+        await self._hangup()
+        return "Call ended."
+
+    @function_tool
+    async def end_call(self, context: RunContext) -> str:
+        """Hang up the call.
+
+        Use this once the conversation is finished and you have said goodbye.
+        """
+        await context.session.generate_reply(
+            instructions="Thank them for their time and say a short goodbye."
+        )
+
+        logger.info("ending call")
+        await self._hangup()
+        return "Call ended."
+
+    async def _hangup(self) -> None:
+        """Delete the room, which drops the SIP leg and ends the phone call."""
+        await self.ctx.api.room.delete_room(
+            api.DeleteRoomRequest(room=self.ctx.room.name)
+        )
+
+
+server = AgentServer()
+
+
+def prewarm(proc: JobProcess):
+    proc.userdata["vad"] = silero.VAD.load()
+
+
+server.setup_fnc = prewarm
+
+
+def phone_number_from_metadata(ctx: JobContext) -> str | None:
+    """Read the number to dial out of the dispatch metadata set by dial.py."""
+    metadata = ctx.job.metadata
+    if not metadata:
+        return None
+    try:
+        return json.loads(metadata).get("phone_number")
+    except json.JSONDecodeError:
+        # Allow a bare phone number as metadata too, for quick `lk dispatch` tests.
+        return metadata.strip() or None
+
+
+_finalize_tasks: set[asyncio.Task] = set()
+
+
+async def _finalize_call_record(call_id: str, call_state: dict) -> None:
+    if not call_state.get("started_recorded"):
+        return
+
+    close_error = call_state.get("close_error")
+    agent_spoke = call_state.get("agent_spoke", False)
+
+    if (
+        agent_spoke
+        and not call_state.get("ended_by_answering_machine")
+        and close_error is None
+    ):
+        await db_record_call_finished(
+            call_id,
+            outcome="success",
+            success_reason="Call was answered, a conversation happened, and it ended without error.",
+        )
+    else:
+        failure_parts = [f"close_reason={call_state.get('close_reason')}"]
+        if call_state.get("ended_by_answering_machine"):
+            failure_parts.append("reached an answering machine")
+        if close_error is not None:
+            failure_parts.append(type(close_error).__name__)
+        if not agent_spoke:
+            failure_parts.append("caller never spoke")
+        await db_record_call_finished(
+            call_id,
+            outcome="failed",
+            failure_reason="; ".join(failure_parts),
+        )
+
+
+def _schedule_call_finalize(call_id: str, call_state: dict) -> None:
+    task = asyncio.create_task(_finalize_call_record(call_id, call_state))
+    _finalize_tasks.add(task)
+    task.add_done_callback(_finalize_tasks.discard)
+
+
+@server.rtc_session(agent_name="outbound-agent")
+async def outbound_agent(ctx: JobContext):
+    ctx.log_context_fields = {
+        "room": ctx.room.name,
+    }
+
+    phone_number = phone_number_from_metadata(ctx)
+    if not phone_number:
+        logger.error(
+            "no phone number in job metadata — dispatch with "
+            '{"phone_number": "+15551234567"}'
+        )
+        ctx.shutdown()
+        return
+
+    if not OUTBOUND_TRUNK_ID:
+        logger.error("LIVEKIT_SIP_OUTBOUND_TRUNK_ID is not set — cannot place calls")
+        ctx.shutdown()
+        return
+
+    await ctx.connect()
+
+    call_id = ctx.room.name or "outbound-call"
+    call_state: dict = {
+        "started_recorded": False,
+        "agent_spoke": False,
+        "ended_by_answering_machine": False,
+        "close_reason": None,
+        "close_error": None,
+    }
+
+    started_result = await db_record_call_started(
+        call_id=call_id,
+        channel="sip",
+    )
+    call_state["started_recorded"] = started_result.get("success", False)
+
+    # Same voice pipeline as src/agent.py — see that file for the annotated version.
+    session = AgentSession(
+        stt=deepgram.STT(model="nova-3"),
+        llm=google.LLM(
+            model="gemini-2.5-flash",
+        ),
+        tts=murf.TTS(
+            voice="en-US-matthew",
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True,
+        ),
+        turn_detection=MultilingualModel(),
+        vad=ctx.proc.userdata["vad"],
+        preemptive_generation=True,
+    )
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev: AgentStateChangedEvent):
+        if ev.new_state == "speaking":
+            call_state["agent_spoke"] = True
+
+    @session.on("close")
+    def on_close(ev: CloseEvent):
+        call_state["close_reason"] = ev.reason.value
+        call_state["close_error"] = ev.error
+        if call_state["started_recorded"]:
+            _schedule_call_finalize(call_id, call_state)
+
+    # Start the session while the phone is still ringing so the models are warm
+    # by the time somebody picks up.
+    session_started = asyncio.create_task(
+        session.start(
+            agent=OutboundAgent(ctx, call_state=call_state),
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    # BVCTelephony is tuned for the narrow frequency range of phone audio.
+                    noise_cancellation=lambda params: (
+                        noise_cancellation.BVCTelephony()
+                        if params.participant.kind
+                        == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                        else noise_cancellation.BVC()
+                    ),
+                ),
+            ),
+        )
+    )
+
+    logger.info("dialing %s", phone_number)
+    try:
+        # wait_until_answered means this returns once the call connects — if the
+        # number is busy, declines, or never answers, it raises instead.
+        await ctx.api.sip.create_sip_participant(
+            api.CreateSIPParticipantRequest(
+                room_name=ctx.room.name,
+                sip_trunk_id=OUTBOUND_TRUNK_ID,
+                sip_call_to=phone_number,
+                participant_identity=CALLEE_IDENTITY,
+                participant_name="Phone user",
+                wait_until_answered=True,
+            )
+        )
+    except api.TwirpError as e:
+        logger.error(
+            "call to %s was not answered: %s (%s)",
+            phone_number,
+            e.message,
+            e.metadata.get("sip_status"),
+        )
+        if call_state["started_recorded"]:
+            await db_record_call_finished(
+                call_id,
+                outcome="failed",
+                failure_reason=f"call not answered: {e.message}",
+            )
+        session_started.cancel()
+        ctx.shutdown()
+        return
+
+    await session_started
+
+    # Speak first — they just picked up an unexpected call and won't say anything.
+    await session.say(GREETING, allow_interruptions=True)
+
+
+if __name__ == "__main__":
+    cli.run_app(server)

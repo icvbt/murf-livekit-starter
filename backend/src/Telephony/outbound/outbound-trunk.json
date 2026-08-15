@@ -1,0 +1,9 @@
+{
+  "trunk": {
+    "name": "Outbound trunk",
+    "address": " sip:icvbt@sip.linphone.org",
+    "numbers": ["sip:icvbt"],
+    "auth_username": "icvbt",
+    "auth_password": "Icvbt@0903"
+  }
+}

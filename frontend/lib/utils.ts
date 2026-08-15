@@ -5,6 +5,7 @@ import type { AppConfig } from '@/app-config';
 
 export const CONFIG_ENDPOINT = process.env.NEXT_PUBLIC_APP_CONFIG_ENDPOINT;
 export const SANDBOX_ID = process.env.SANDBOX_ID;
+const CALLER_ID_STORAGE_KEY = 'arthsakhi_caller_id';
 
 export interface SandboxConfig {
   [key: string]:
@@ -99,6 +100,7 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
   return TokenSource.custom(async () => {
     const url = new URL(process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT!, window.location.origin);
     const sandboxId = appConfig.sandboxId ?? '';
+    const callerId = getOrCreateCallerId();
     const roomConfig = appConfig.agentName
       ? {
           agents: [{ agent_name: appConfig.agentName }],
@@ -113,6 +115,7 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
           'X-Sandbox-Id': sandboxId,
         },
         body: JSON.stringify({
+          caller_id: callerId,
           room_config: roomConfig,
         }),
       });
@@ -122,4 +125,25 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
       throw new Error('Error fetching connection details!');
     }
   });
+}
+
+export function getOrCreateCallerId() {
+  const safePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+  if (typeof window === 'undefined') {
+    return `caller_${crypto.randomUUID()}`;
+  }
+
+  try {
+    const existingValue = window.localStorage.getItem(CALLER_ID_STORAGE_KEY);
+    if (existingValue && safePattern.test(existingValue)) {
+      return existingValue;
+    }
+
+    const nextValue = `caller_${crypto.randomUUID()}`;
+    window.localStorage.setItem(CALLER_ID_STORAGE_KEY, nextValue);
+    return nextValue;
+  } catch {
+    return `caller_${crypto.randomUUID()}`;
+  }
 }

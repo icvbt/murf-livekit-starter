@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
 import { RoomConfiguration } from '@livekit/protocol';
+import { randomUUID } from 'crypto';
 
 type ConnectionDetails = {
   serverUrl: string;
@@ -8,6 +9,8 @@ type ConnectionDetails = {
   participantName: string;
   participantToken: string;
 };
+
+const SAFE_CALLER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 // NOTE: you are expected to define the following environment variables in `.env.local`:
 const API_KEY = process.env.LIVEKIT_API_KEY;
@@ -32,6 +35,10 @@ export async function POST(req: Request) {
 
     // Parse room config from request body (if provided).
     const body = await req.json().catch(() => ({}));
+    const callerId =
+      typeof body?.caller_id === 'string' && SAFE_CALLER_ID_PATTERN.test(body.caller_id)
+        ? body.caller_id
+        : `caller_${randomUUID()}`;
     let roomConfig: RoomConfiguration | undefined;
     if (body?.room_config) {
       roomConfig = RoomConfiguration.fromJson(body.room_config, { ignoreUnknownFields: true });
@@ -43,10 +50,10 @@ export async function POST(req: Request) {
         { ignoreUnknownFields: true }
       );
     }
-      
+
     // Generate participant token
     const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const participantIdentity = callerId;
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
