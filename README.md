@@ -1,278 +1,360 @@
-# Voice Agent Starter — Powered by Murf Falcon
+# ArthSakhi — Murf AI Voice for Bharat
 
-Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on the market - swap the system prompt to build anything from customer support to language tutors.
+ArthSakhi (अर्थसखी, "friend of money") is a voice-first financial-literacy assistant that helps people in India understand government financial schemes and safe digital-banking practices — simply by speaking.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Murf Falcon](https://img.shields.io/badge/TTS-Murf%20Falcon-6366F1)](https://murf.ai/api/docs/text-to-speech/streaming) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![TypeScript](https://img.shields.io/badge/TypeScript-React-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io)
 
----
-
-## Why Murf Falcon
-
-- **55ms model latency** - fastest production TTS
-- **130ms time-to-first-audio** across 10+ global regions
-- **$0.01/1000 characters** - up to 10x cheaper than alternatives
-- **150+ voices** across 35+ languages
-- **99.38% pronunciation accuracy**
+This is a challenge/demo project, not a financial product. It shows how a conversational voice agent can be built responsibly around a sensitive, real-world domain: spoken financial guidance.
 
 ---
 
-## Architecture
+## Architecture at a glance
+
+One conversation, from caller audio to spoken response:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant L as LiveKit
+    participant D as Deepgram
+    participant G as Gemini
+    participant T as Python tools + SQLite
+    participant M as Murf Falcon
+
+    C->>L: speaks audio
+    L->>D: audio stream
+    D->>G: text transcript
+    G->>T: calls a safe tool (e.g. eligibility check)
+    T-->>G: tool result
+    G->>M: response text
+    M->>L: audio stream
+    L->>C: hears the spoken reply
+```
+
+LiveKit stays in the middle of every hop, so the caller never talks to Deepgram, Gemini, or Murf directly — only to the agent session that orchestrates them.
+
+---
+
+## Introduction
+
+Many people learn about schemes such as PMJDY, PMSBY, PMJJBY, APY, and SSY from unverified sources. Reading a government portal or a dense application form is not practical while working — and is harder still if you are not fluent in the form's language.
+
+ArthSakhi is for that moment: a caller speaks a question out loud and gets a short, plain-spoken answer with a clear source and a safe next step — in Hindi, Hinglish, or English, without jargon, and never by asking for an OTP, PIN, or account number.
+
+---
+
+## Why ArthSakhi?
+
+- **Language.** The agent mirrors the caller's language — Hindi, Hinglish, or English — and switches the Murf voice when it detects Hindi/Hinglish speech.
+- **Literacy and accessibility.** Callers need not read forms or navigate portals; they only speak and listen. Voice also helps low-vision and older users.
+- **Simple spoken guidance.** Answers stay short and conversational, using respectful forms such as *aap* and *आप*.
+- **Safety.** The agent is explicitly not a bank employee, officer, or advisor. It gives informational guidance and redirects account-specific, fraud, or approval questions to the official channel or a human.
+
+---
+
+## What it does
+
+- **Real-time browser voice calls.** A Next.js frontend connects over LiveKit; speak, and the agent replies with Murf Falcon TTS.
+- **Deepgram speech-to-text** (Nova-3, multilingual) transcribes the caller.
+- **Google Gemini** reasons, follows the safety prompt, and calls only safe predefined tools.
+- **Murf Falcon text-to-speech** (the project's real-time conversational TTS) uses the Indian English voice `Anisha` and switches Hindi/English variants.
+- **Consent-aware caller memory.** Only non-sensitive facts (name, language, schemes discussed) may be remembered, and only after clear consent; sensitive keys are rejected at the storage layer.
+- **Government-scheme eligibility guidance** for PMJDY, PMSBY, PMJJBY, APY, and SSY, from a local curated dataset, always labeled as guidance — not approval.
+- **Human escalation with reference IDs.** For fraud or account-specific issues, a consent-based request stores only a short safe summary and returns an ID such as `ASH-2026-XXXX`.
+- **Specialist handoff.** Scheme-specific questions transfer the same call to a second, narrower agent.
+- **Outbound phone calls** via a LiveKit SIP trunk worker.
+- **Local dashboards** for call outcomes and human-help requests, reading local SQLite.
+
+---
+
+## How it works
 
 ```mermaid
 flowchart LR
-    A[🎙️ User speaks] -->|audio| B[Deepgram STT]
-    B -->|text| C[LLM]
-    C -->|response text| D[Murf Falcon TTS]
-    D -->|audio| E[LiveKit]
-    E -->|stream| F[🔊 User hears]
+    subgraph Caller["Caller"]
+        B["Browser web UI"]
+        P["SIP phone client"]
+    end
 
-    style A fill:#444441,stroke:#888780,color:#fff
-    style B fill:#185FA5,stroke:#85B7EB,color:#fff
-    style C fill:#534AB7,stroke:#AFA9EC,color:#fff
-    style D fill:#0F6E56,stroke:#5DCAA5,color:#fff
-    style E fill:#D85A30,stroke:#F0997B,color:#fff
-    style F fill:#444441,stroke:#888780,color:#fff
+    LK["LiveKit real-time transport"]
+    STT["Deepgram speech-to-text"]
+    LLM["Gemini reasoning + tools"]
+    TOOLS["Python tools"]
+    DB[("SQLite")]
+    TTS["Murf Falcon text-to-speech"]
+    SPEC["Scheme eligibility specialist"]
+    HUMAN["Human support"]
+    DASH["Call dashboard"]
+
+    B --> LK
+    P --> LK
+    LK --> STT
+    STT --> LLM
+    LLM --> TOOLS
+    TOOLS <--> DB
+    TOOLS --> SPEC
+    TOOLS --> HUMAN
+    LLM --> TTS
+    TTS --> LK
+    LK --> B
+    LK --> P
+    DB --> DASH
 ```
+
+Audio flows in a loop: voice enters via LiveKit, is transcribed by Deepgram, reasoned over by Gemini, answered with safe Python tools and SQLite, and spoken back through Murf Falcon. Two optional paths branch off: scheme-specific questions transfer to the specialist agent, and fraud or account-specific issues can create a human-support request. The dashboard shows outcome counts from the same database.
 
 ---
 
-## Quickstart
+## Core interaction flows
+
+- **General financial-literacy question.** The main agent answers — no tools, no handoff.
+- **Government-scheme eligibility.** The call is handed to the Government Scheme Eligibility Specialist, which asks one non-sensitive question at a time, runs the eligibility tool, and presents a dated, non-binding result with its source.
+- **Human escalation.** For suspected fraud or account-specific issues, ArthSakhi reads a fixed consent statement and, only after clear consent, creates a support request with a short summary, what was checked, urgency, language, and follow-up method. The caller gets a reference ID; sensitive content is rejected.
+- **Outbound reminder and opt-out.** An outbound SIP worker can place calls. Reminder scheduling and a stored do-not-call list are planned; today an opt-out request is acknowledged conversationally but not persisted.
+- **Specialist handoff.** The main agent keeps the call open and swaps the in-call agent with `AgentSession.update_agent(...)` — no second call, no disconnect.
+- **Call success/failure tracking.** Each agent writes a row to the `call_outcomes` table when a call starts and updates it when the session closes (`backend/src/call_recorder.py`); the dashboard aggregates total, successful, and failed calls from that table.
+
+---
+
+## Build your own voice agent
+
+Every voice agent needs four building blocks; here is what each does and which technology this repo uses.
+
+1. **Speech-to-text** converts speech into text. Here: **Deepgram** (`model="nova-3"`, multilingual).
+2. **LLM** understands intent, reasons, and chooses tools. Here: **Google Gemini** via the LiveKit `google.LLM` plugin.
+3. **Text-to-speech** converts the response back into natural audio. Here: **Murf Falcon** via `livekit-murf`, tuned for conversational pacing.
+4. **Real-time transport** carries audio between caller and agent. Here: **LiveKit**, which also supplies voice-activity and turn detection.
+
+These four pieces are wired together in one file, `backend/src/agent.py`, so the whole agent is easy to inspect and extend.
+
+---
+
+## Key implementation patterns
+
+**Starting a LiveKit agent session** (`backend/src/agent.py`):
+
+```python
+session = AgentSession(
+    stt=deepgram.STT(model="nova-3", language="multi"),
+    llm=google.LLM(model="gemini-3.5-flash"),
+    tts=murf.TTS(
+        voice="Anisha",
+        style="Conversation",
+        tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+        text_pacing=True,
+    ),
+    turn_detection=MultilingualModel(),
+    vad=ctx.proc.userdata["vad"],
+)
+await session.start(agent=assistant, room=ctx.room)
+```
+
+**Defining a voice-agent tool** — tools are plain methods decorated with `@function_tool`:
+
+```python
+@function_tool
+async def check_scheme_eligibility(
+    self,
+    context: RunContext,
+    scheme_id: str,
+    answers: SchemeEligibilityAnswers,
+) -> dict[str, Any]:
+    return check_scheme_eligibility(scheme_id, dict(answers))
+```
+
+**Reading safe call-outcome metrics** — the dashboard aggregates the `call_outcomes` table (`backend/src/call_dashboard.py`). The agents write each outcome automatically via `backend/src/call_recorder.py`: a row is inserted when a call starts and finalized on the session's `close` event. The dashboard's query:
+
+```sql
+SELECT
+    COUNT(*) AS total_calls,
+    SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS successful_calls,
+    SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed_calls
+FROM call_outcomes
+```
+
+**Handing off to the specialist agent** — a redacted context is built first, then the same call switches to the specialist:
+
+```python
+specialist = SchemeSpecialist(**safe_context)
+await context.session.say(
+    handoff_announcement(safe_context["language_preference"]),
+    allow_interruptions=False,
+)
+context.session.update_agent(specialist)
+```
+
+None of the above involve API keys, secrets, phone numbers, or caller data — the agent works only with safe, non-sensitive inputs.
+
+---
+
+## Run locally
 
 ### Prerequisites
 
-- **Python** 3.10+
-- **[uv](https://docs.astral.sh/uv/)** - fast Python package manager
-  ```bash
-  # macOS/Linux
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # Windows (PowerShell)
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-- **Node.js** 18+
-- **pnpm** — fast Node package manager
-  ```bash
-  npm install -g pnpm
-  ```
-- A [LiveKit](https://cloud.livekit.io/) project (free tier available)
+- **Python 3.10+** and **[uv](https://docs.astral.sh/uv/)**
+- **Node.js 18+** and **pnpm** (`npm install -g pnpm`)
+- A **LiveKit** project at [cloud.livekit.io](https://cloud.livekit.io/) (free tier), or the bundled `livekit-server.exe` for a local dev server
+- API keys for **Murf**, **Deepgram**, and **Google Gemini**
 
-### Step 1: Clone the repo
+### Repository setup
 
 ```bash
-git clone https://github.com/murf-ai/murf-livekit-starter.git
+git clone https://github.com/icvbt/murf-livekit-starter.git
 cd murf-livekit-starter
 ```
 
-### Step 2: Set up environment variables
+Copy `backend/.env.example` to `backend/.env.local` and `frontend/.env.example` to `frontend/.env.local`, then fill in your keys.
 
-Create `.env.local` in both `backend/` and `frontend/` (copy from `.env.example` in each). You need:
-
-| Variable                               | Where to get it                                        | Required |
-| -------------------------------------- | ------------------------------------------------------ | -------- |
-| `LIVEKIT_URL`                          | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_KEY`                      | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_SECRET`                   | LiveKit Cloud dashboard                                | Yes      |
-| `MURF_API_KEY`                         | [murf.ai/api/dashboard](https://murf.ai/api/dashboard) | Yes      |
-| `DEEPGRAM_API_KEY`                     | [deepgram.com](https://deepgram.com)                   | Yes      |
-| `GOOGLE_API_KEY` (or `OPENAI_API_KEY`) | Depends on LLM choice                                  | Yes      |
-
-### Step 3: Install backend dependencies
+### Dependency installation
 
 ```bash
 cd backend
 uv sync
-uv run python src/agent.py download-files
-```
+uv run python src/agent.py download-files   # first time only: VAD + turn-detector models
 
-### Step 4: Install frontend dependencies
-
-```bash
 cd frontend
 pnpm install
 ```
 
-### Step 5: Run it
-
-**Option A - All-in-one (from repo root):**
+### Backend
 
 ```bash
-# macOS/Linux
-chmod +x start_app.sh
-./start_app.sh
-
-# Windows (PowerShell)
-.\start_app.ps1
+cd backend
+uv run python src/agent.py dev      # development (auto-reload)
+uv run python src/agent.py console  # test the agent from the terminal, no UI
 ```
 
-**Option B - Separate terminals:**
+### Frontend
 
 ```bash
-# Terminal 1 — LiveKit Server
-livekit-server --dev
-
-# Terminal 2 — Backend agent
-cd backend && uv run python src/agent.py dev
-
-# Terminal 3 — Frontend
-cd frontend && pnpm dev
+cd frontend
+pnpm dev
 ```
 
-Then open **http://localhost:3000** in your browser.
+### All-in-one (Windows)
 
-You should now see the voice agent UI. Click **Start talking**, allow microphone access, and speak — the agent will respond with Murf Falcon TTS. Ensure your backend and (if using Option B) LiveKit server are running.
+From the repo root, run `.\start_app.ps1`. It starts LiveKit (if installed), the backend, and the frontend in separate PowerShell windows. (`start_app.sh` is the macOS/Linux equivalent.)
+
+### Browser test URL
+
+Open **http://localhost:3000**, allow microphone access, and click **Start conversation**. The backend agent must be running.
+
+### Local dashboards
+
+```bash
+cd backend
+uv run python src/call_dashboard.py        # call outcomes → http://localhost:8765
+uv run python src/escalation_dashboard.py  # human-help requests → http://localhost:8765
+```
+
+Both dashboards default to port 8765, so run one at a time or change `PORT` in the file.
+
+### SIP / outbound calls
+
+Outbound calling works with a configured LiveKit SIP trunk:
+
+```bash
+cd backend
+uv run python src/Telephony/outbound/agent.py dev
+uv run python src/Telephony/outbound/dial.py --to +15551234567
+```
+
+The number must be E.164 format and one your SIP provider lets you call, and `LIVEKIT_SIP_OUTBOUND_TRUNK_ID` must be set. Inbound SIP (a phone or softphone such as Linphone calling into the agent) is documented in `backend/src/Telephony/Readme.md`, but the inbound agent code is not included in this repository.
 
 ---
 
-## Deploy
+## Environment variables and secrets
 
-Want to deploy this beyond localhost? You'll need to deploy **two services**: the backend agent and the frontend. Both must use the same LiveKit project.
+All secrets live in `.env.local` files that are already git-ignored (`.env.*` everywhere, and `backend/data/*.sqlite3`). **Never commit `.env` files.**
 
-> This is a two-service app — the backend agent and the frontend UI deploy separately. You'll need both running and connected to the same LiveKit project.
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `LIVEKIT_URL` | backend + frontend | LiveKit server URL |
+| `LIVEKIT_API_KEY` | backend + frontend | LiveKit API key |
+| `LIVEKIT_API_SECRET` | backend + frontend | LiveKit API secret |
+| `MURF_API_KEY` | backend | Murf Falcon TTS |
+| `DEEPGRAM_API_KEY` | backend | Deepgram speech-to-text |
+| `GOOGLE_API_KEY` | backend | Gemini LLM |
+| `AGENT_NAME` | frontend (optional) | Explicit agent dispatch; backend registers `my-agent` |
+| `LIVEKIT_SIP_OUTBOUND_TRUNK_ID` | backend | Outbound SIP trunk (outbound calls only) |
+| `TRANSFER_TO_NUMBER` | backend (optional) | Human-transfer target for the outbound agent |
+| `CALL_DB_PATH` | backend (optional) | Override for the call dashboard's SQLite path |
 
-### Backend (Python agent) — Deploy to Railway
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tIVCF1?referralCode=cNjn2P&utm_medium=integration&utm_source=template&utm_campaign=generic)
-
-Set these environment variables in Railway:
-
-- `MURF_API_KEY`
-- `DEEPGRAM_API_KEY`
-- `GOOGLE_API_KEY` or `OPENAI_API_KEY`
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-
-The backend runs as a long-lived Python process that connects to LiveKit as an agent. Railway handles this well.
-
-### Frontend (Next.js) — Deploy to Vercel
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/murf-ai/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
-
-Set these environment variables in Vercel:
-
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `AGENT_NAME` (optional — for explicit agent dispatch)
-
-The frontend is a standard Next.js app. Point it at the same LiveKit instance your backend agent is connected to.
-
-### Connecting them
-
-The frontend and backend don't call each other directly — they both connect to **LiveKit**, which handles the real-time audio transport.
-
-1. Use the **same** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` on both Railway and Vercel
-2. Set `AGENT_NAME=my-agent` on Vercel — this matches the `agent_name="my-agent"` registered in `backend/src/agent.py`
-3. Verify: Railway logs should show the agent connected to LiveKit. Open your Vercel URL, click **Start talking** — the agent should respond
-
-If the agent doesn't connect, double-check that both services point to the same LiveKit project and that the backend is running (check Railway logs).
+Never publish API keys, SIP credentials, phone numbers, caller data, OTPs, PINs, passwords, account numbers, government IDs, raw audio, or full transcripts. This repository contains none of these, and the storage layer rejects them by design.
 
 ---
 
-## Change the Use Case
+## Try these conversations
 
-The default system prompt makes this a **customer support agent**. You can change the agent’s behavior by editing the prompt.
+Open the browser UI and speak:
 
-**Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
-
-### Example prompts (copy-paste)
-
-**Customer Support (default):**
-
-```
-You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate.
-```
-
-**Language Tutor:**
-
-```
-You are a patient and encouraging language tutor helping the user practice conversational Spanish. Speak primarily in Spanish but switch to English to explain grammar or vocabulary when needed. Correct mistakes gently and suggest better phrasing. Keep conversations natural and fun.
-```
-
-**AI Receptionist:**
-
-```
-You are a professional receptionist for a medical clinic. Help callers schedule appointments, answer questions about office hours and services, and take messages for doctors. Be warm but efficient. Ask for the caller's name and reason for calling upfront.
-```
-
-See the Configuration section below for voice, STT, and LLM options.
+1. **General question (main agent):** "What does financial literacy mean?"
+2. **Scheme question (specialist handoff):** "Am I eligible for PMJDY? I am 24 and live in Karnataka."
+3. **Fraud question (human support):** "I think I received a fraudulent banking message." Listen to the fixed consent statement, agree, and you should receive a reference ID.
+4. **Opt-out request:** "Please don't call me again." Today the agent acknowledges this conversationally; a stored do-not-call list is a roadmap item.
+5. **Ending before success:** disconnect or close the tab before the agent finishes. This exercises graceful shutdown; the call is recorded as failed.
 
 ---
 
-## Configuration
+## Testing and validation
 
-### Murf voice
+```bash
+cd backend
+uv run python -m compileall src   # syntax check across the backend
+uv run pytest                     # test suite
+uv run ruff check .               # lint
 
-Edit the `tts=murf.TTS(...)` call in `backend/src/agent.py`. Set the `voice` argument to any Murf voice ID. Examples:
+cd frontend
+pnpm lint
+pnpm format:check
+```
 
-- `Anisha` — Indian English (female, default in this starter)
-- `Pooja` — Indian English (female)
-- `Samar` — Indian English (male)
-- `Amara` — US English (female)
-- `Gordon` — US English (male)
-- `Hazel` — UK English (female)
-- `Bertie` — UK English (male)
-
-Browse all voices: [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library).
-
-### STT provider
-
-STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call. The default is Deepgram (`deepgram.STT(model="nova-3")`). You can swap to another LiveKit-compatible STT plugin if needed.
-
-### LLM (Gemini vs OpenAI)
-
-- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-3.5-flash-lite")` in `agent.py`.
-- **OpenAI:** Set `OPENAI_API_KEY`, add the OpenAI plugin, and use the corresponding `llm=openai.LLM(...)` in `agent.py`.
-
-### Audio format
-
-Murf Falcon and LiveKit handle audio format internally. For advanced options, see [Murf API docs](https://murf.ai/api/docs) and [LiveKit docs](https://docs.livekit.io).
+The pytest suite covers SQLite initialization, consent-gated memory (including rejection of sensitive keys and values), eligibility validation and result wording, escalation redaction, and specialist handoff behavior. Unit tests for memory, eligibility, and redaction run offline; the LLM-as-judge agent tests call a live judge model, so they need valid API keys, network access, and LiveKit credentials.
 
 ---
 
-## Project Structure
+## Troubleshooting
 
-```
-murf-livekit-starter/
-├── backend/                 # Python voice agent (LiveKit Agents + Murf Falcon)
-│   ├── src/
-│   │   └── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
-│   ├── tests/               # Agent tests
-│   ├── .env.example         # Backend env template
-│   ├── pyproject.toml       # Python deps (uv)
-│   └── railway.toml         # Railway deploy config
-├── frontend/                # Next.js UI for voice sessions
-│   ├── app/
-│   │   ├── page.tsx         # Main page
-│   │   └── api/token/       # LiveKit token endpoint (dev)
-│   ├── components/          # UI (agents-ui, app config, theme)
-│   ├── app-config.ts        # Branding, title, button text, accent
-│   ├── .env.example         # Frontend env template
-│   └── package.json         # Node deps (pnpm)
-├── start_app.sh             # Start LiveKit + backend + frontend (macOS/Linux)
-├── start_app.ps1            # Start LiveKit + backend + frontend (Windows)
-├── README.md                # This file
-```
+- **LiveKit or API keys not loading.** The agent reads `.env.local` from the `backend/` directory. Confirm both `.env.local` files exist and restart the backend after editing. A typo in `LIVEKIT_URL` is the most common cause of silent connection failures.
+- **Dashboard shows zero calls.** It reads `backend/data/arthsakhi.sqlite3`. If the agent runs from a different working directory, or you set `CALL_DB_PATH` elsewhere, the dashboard reads a different database. A fresh database also starts empty until calls actually run — outcomes are recorded when sessions start and close, and only non-empty `success`/`failed` rows are counted.
+- **SIP/outbound connection failure.** Verify `LIVEKIT_SIP_OUTBOUND_TRUNK_ID` and that the trunk's credentials and caller ID are accepted by your provider. The worker logs the SIP status code on failure. Inbound SIP is not shipped.
+- **Browser microphone permission failure.** The frontend detects and surfaces microphone errors. Check site permissions; mic access needs `localhost` or HTTPS (a secure context).
+- **Specialist handoff API differences.** The handoff uses `AgentSession.update_agent(...)`, the API in `livekit-agents ~1.4` (pinned in `pyproject.toml`). Other versions differ.
+- **Port already in use.** Both dashboards bind port 8765 and the frontend uses 3000. Change `PORT` in the dashboard script or free the port first.
 
-For deeper documentation on each part, see:
+---
 
-- [Backend Documentation](./backend/README.md) — agent pipeline, voice/LLM/STT configuration, testing, deployment
-- [Frontend Documentation](./frontend/README.md) — UI customization, visualizers, theming, component architecture
+## Privacy and responsible AI
+
+- **Consent before memory, reminders, or escalation.** The agent never saves memory or creates a support request until the caller clearly agrees; ambiguity means no action.
+- **Opt-out handling.** The agent acknowledges opt-out requests; a stored do-not-call list is planned.
+- **No sensitive financial information.** OTPs, PINs, CVVs, passwords, card/account numbers, Aadhaar, and PAN are never stored, never passed to tools, and never included in summaries — enforced at the prompt, validation, and storage layers.
+- **No unsupported claims.** The agent never claims approvals, refunds, blocked transactions, balances, or application status. Eligibility results are labeled "general guidance, not official approval" with their source and verification date.
+- **Human support for issues AI should not decide.** Fraud and account-specific matters go to official channels or a consent-based human-support request.
+- **Local SQLite and challenge-project limitations.** Data lives in a local SQLite file without encryption, authentication, or backup — fine for a local demo, not for production.
+
+---
+
+## Project status and next steps
+
+**Implemented.** Browser voice conversations (LiveKit → Deepgram → Gemini → Murf Falcon), language-aware TTS, consent-based caller memory, scheme eligibility guidance, specialist handoff, human escalation with reference IDs, outbound SIP worker, automated call-outcome recording, call and human-help dashboards, and a passing test suite.
+
+**Suitable for a local demo.** The browser conversation flow, eligibility guidance over the local curated dataset, the specialist handoff, and both dashboards.
+
+**Required before production.** Replace the local dataset with a verified, dated official source; add reminder scheduling with a stored opt-out; add caller authentication and encrypted, backed-up storage; connect the human-support queue to a real workflow; add scaling, observability, and data-retention policies.
 
 ---
 
 ## Links
 
-- [Murf API Docs](https://murf.ai/api/docs)
-- [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library)
-- [LiveKit Docs](https://docs.livekit.io)
-- [Deepgram Docs](https://developers.deepgram.com)
-- [Murf Falcon Benchmarks](https://murf.ai/falcon/benchmarks)
-- [TTS Latency Benchmarker](https://github.com/sahilsgupta/tts-latency-benchmarker) — run your own p50/p95 tests across providers
-- [Murf Discord](https://discord.gg/FbKAy96Sz7)
-- [Murf Startup Incubator](https://murf.ai/api) — 50M free characters for startups
+- **Public repository:** https://github.com/icvbt/murf-livekit-starter
+- **Demo video:** *pending — add the link when available*
+- **Day 10 blog post:** *pending — add the link when available*
+- **LinkedIn post:** *pending — add the link when available*
+- **Underlying docs:** [LiveKit Agents](https://docs.livekit.io/agents) · [Murf Falcon TTS](https://murf.ai/api/docs/text-to-speech/streaming) · [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library) · [Deepgram](https://developers.deepgram.com)
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
