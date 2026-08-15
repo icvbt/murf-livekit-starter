@@ -101,6 +101,63 @@ The tool handles missing files, invalid JSON, invalid inputs, and source failure
 - The result is guidance only, not official approval.
 - Users still need to verify current rules, documents, and application steps with the official portal or participating bank.
 
+## Day 9: Government Scheme Eligibility Specialist (Agent Handoff)
+
+Day 9 adds a second agent: the **Government Scheme Eligibility Specialist** (`SchemeSpecialist`), defined in [`src/scheme_specialist.py`](src/scheme_specialist.py).
+
+### Role of the specialist
+
+Its only job is to help callers with:
+
+- Government-scheme eligibility.
+- Required documents.
+- Basic scheme-specific guidance.
+
+It must not handle general financial-literacy questions, fraud or unauthorized transactions, account-specific banking issues, OTPs/PINs/passwords/CVVs/account numbers/Aadhaar/PAN, outbound reminders, or general human escalation.
+
+### Handoff tool
+
+The main ArthSakhi agent (`Assistant`) exposes the tool:
+
+```
+transfer_to_scheme_specialist(
+    user_question, conversation_summary, language_preference,
+    scheme_name?, known_non_sensitive_answers?
+)
+```
+
+The tool:
+
+1. Builds a safe context from the caller's latest question, a short conversation summary, language preference, scheme name (if known), and only non-sensitive eligibility answers.
+2. Speaks the required announcement — *"I'll connect you to our government-scheme eligibility specialist so you can receive more focused guidance."* (or the Hindi/Hinglish variant) — before switching.
+3. Uses the installed LiveKit Agents `AgentSession.update_agent(...)` API to switch to the specialist in the same call. No second call, no disconnect, same room and participant.
+
+### Routing conditions
+
+- **Handle in the main agent (no handoff):** general financial-literacy explanations ("What does financial literacy mean?"), general scam-avoidance education, general scheme explanations.
+- **Transfer to the specialist:** "Am I eligible for PMJDY?", "What documents are needed for PMSBY?", "Can I apply for this government financial scheme?", "What are the basic requirements for this scheme?".
+- **Never transfer:** fraud, unauthorized transactions, account-specific issues, OTP/PIN/password/card/account questions, outbound reminders, general human escalation (these use the existing Day 7 escalation flow).
+
+### Context passed
+
+The specialist receives only:
+
+- `user_question` — the caller's latest question.
+- `conversation_summary` — a short safe summary.
+- `language_preference` — Hindi, Hinglish, or English.
+- `scheme_name` — if known.
+- `known_non_sensitive_answers` — only non-sensitive eligibility fields already collected.
+
+Sensitive data is filtered: disallowed answer keys, sensitive value patterns (OTPs, PINs, Aadhaar, PAN, card/account numbers, etc.) and full transcripts/audio are never passed. The specialist continues without asking the caller to repeat the problem.
+
+### Reuse
+
+The specialist reuses the existing Day 5 `check_scheme_eligibility` function and the same `data/schemes.json` dataset. No duplicate eligibility logic was added.
+
+### Handoff method used
+
+`AgentSession.update_agent(specialist)` — the in-call agent-switch API of the installed `livekit-agents ~1.4` SDK. Confirmed by inspecting the installed version. The handoff inserts an `AgentHandoff` item into the session chat context and keeps the conversation, room, and audio pipeline intact.
+
 ## Setup
 
 ### 1. Install dependencies
@@ -278,6 +335,17 @@ uv run pytest
 Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests).
 
 Day 5 adds direct tests for the scheme eligibility helper, source metadata, validation failures, local dataset fallback, and two agent-level behavior checks: one for eligibility questions and one for account/balance questions.
+
+Day 9 adds [`tests/test_scheme_specialist.py`](tests/test_scheme_specialist.py) with focused tests that verify:
+
+- The `transfer_to_scheme_specialist` tool is registered and has a clear description.
+- The specialist is a separate agent with its own narrower instructions.
+- Handoff context preserves the question, summary, language, and scheme name.
+- Sensitive data is excluded from the handoff context.
+- No duplicate call-outcome/memory/escalation records are created on handoff.
+- A general question stays with the main agent (no handoff).
+- A scheme question triggers the specialist handoff (LLM-judged, exercises the real `update_agent` switch).
+- A fraud question uses the existing escalation flow (no handoff).
 
 To run just the backend checks:
 
