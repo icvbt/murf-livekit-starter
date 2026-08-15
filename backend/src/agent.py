@@ -12,18 +12,22 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    AgentStateChangedEvent,
+    CloseEvent,
     JobContext,
     JobProcess,
     RunContext,
     UserInputTranscribedEvent,
     cli,
     function_tool,
-    tokenize,
     room_io,
+    tokenize,
 )
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from call_recorder import record_call_finished as db_record_call_finished
+from call_recorder import record_call_started as db_record_call_started
 from caller_memory import lookup_caller as db_lookup_caller
 from caller_memory import save_caller_memory as db_save_caller_memory
 from escalation_store import create_escalation as db_create_escalation
@@ -143,6 +147,41 @@ async def _wait_for_remote_participant(room: rtc.Room, timeout_seconds: float = 
             return next(iter(room.remote_participants.values()))
         await asyncio.sleep(0.1)
     return None
+
+
+_finalize_tasks: set[asyncio.Task] = set()
+
+
+async def _finalize_call_record(call_id: str, call_state: dict[str, Any]) -> None:
+    if not call_state.get("started_recorded"):
+        return
+
+    close_error = call_state.get("close_error")
+    agent_spoke = call_state.get("agent_spoke", False)
+
+    if agent_spoke and close_error is None:
+        await db_record_call_finished(
+            call_id,
+            outcome="success",
+            success_reason="Agent produced a spoken response and the call ended without error.",
+        )
+    else:
+        failure_parts = [f"close_reason={call_state.get('close_reason')}"]
+        if close_error is not None:
+            failure_parts.append(type(close_error).__name__)
+        if not agent_spoke:
+            failure_parts.append("no spoken response was produced")
+        await db_record_call_finished(
+            call_id,
+            outcome="failed",
+            failure_reason="; ".join(failure_parts),
+        )
+
+
+def _schedule_call_finalize(call_id: str, call_state: dict[str, Any]) -> None:
+    task = asyncio.create_task(_finalize_call_record(call_id, call_state))
+    _finalize_tasks.add(task)
+    task.add_done_callback(_finalize_tasks.discard)
 
 
 class Assistant(Agent):
@@ -374,6 +413,30 @@ async def my_agent(ctx: JobContext):
     caller_id = remote_participant.identity if remote_participant else f"session-{uuid.uuid4()}"
     initial_memory = await db_lookup_caller(caller_id) if remote_participant else None
 
+    call_id = ctx.room.name or f"call-{uuid.uuid4()}"
+    channel = (
+        "sip"
+        if remote_participant
+        and remote_participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+        else "browser"
+    )
+    language_preference = (
+        initial_memory.get("language_preference") if initial_memory else None
+    )
+    call_state: dict[str, Any] = {
+        "started_recorded": False,
+        "agent_spoke": False,
+        "close_reason": None,
+        "close_error": None,
+    }
+
+    started_result = await db_record_call_started(
+        call_id=call_id,
+        channel=channel,
+        language_preference=language_preference,
+    )
+    call_state["started_recorded"] = started_result.get("success", False)
+
     session = AgentSession(
         stt=deepgram.STT(model="nova-3", language="multi"),
         llm=google.LLM(
@@ -418,6 +481,18 @@ async def my_agent(ctx: JobContext):
         else:
             logger.info("Detected English speech. Switching TTS to en-IN-anisha.")
             session.tts.update_options(voice="en-IN-anisha")
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev: AgentStateChangedEvent):
+        if ev.new_state == "speaking":
+            call_state["agent_spoke"] = True
+
+    @session.on("close")
+    def on_close(ev: CloseEvent):
+        call_state["close_reason"] = ev.reason.value
+        call_state["close_error"] = ev.error
+        if call_state["started_recorded"]:
+            _schedule_call_finalize(call_id, call_state)
 
     await session.start(
         agent=assistant,

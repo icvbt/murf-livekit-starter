@@ -149,6 +149,8 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    AgentStateChangedEvent,
+    CloseEvent,
     JobContext,
     JobProcess,
     RunContext,
@@ -159,6 +161,9 @@ from livekit.agents import (
 )
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from call_recorder import record_call_finished as db_record_call_finished
+from call_recorder import record_call_started as db_record_call_started
 
 logger = logging.getLogger("outbound-agent")
 
@@ -181,9 +186,10 @@ CALLEE_IDENTITY = "phone-user"
 
 
 class OutboundAgent(Agent):
-    def __init__(self, ctx: JobContext) -> None:
+    def __init__(self, ctx: JobContext, call_state: dict | None = None) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
         self.ctx = ctx
+        self.call_state = call_state or {}
 
     @function_tool
     async def transfer_to_human(self, context: RunContext) -> str:
@@ -223,6 +229,7 @@ class OutboundAgent(Agent):
         Use this as soon as you hear a recorded greeting rather than a live person.
         """
         logger.info("answering machine detected — hanging up")
+        self.call_state["ended_by_answering_machine"] = True
         await self._hangup()
         return "Call ended."
 
@@ -269,6 +276,47 @@ def phone_number_from_metadata(ctx: JobContext) -> str | None:
         return metadata.strip() or None
 
 
+_finalize_tasks: set[asyncio.Task] = set()
+
+
+async def _finalize_call_record(call_id: str, call_state: dict) -> None:
+    if not call_state.get("started_recorded"):
+        return
+
+    close_error = call_state.get("close_error")
+    agent_spoke = call_state.get("agent_spoke", False)
+
+    if (
+        agent_spoke
+        and not call_state.get("ended_by_answering_machine")
+        and close_error is None
+    ):
+        await db_record_call_finished(
+            call_id,
+            outcome="success",
+            success_reason="Call was answered, a conversation happened, and it ended without error.",
+        )
+    else:
+        failure_parts = [f"close_reason={call_state.get('close_reason')}"]
+        if call_state.get("ended_by_answering_machine"):
+            failure_parts.append("reached an answering machine")
+        if close_error is not None:
+            failure_parts.append(type(close_error).__name__)
+        if not agent_spoke:
+            failure_parts.append("caller never spoke")
+        await db_record_call_finished(
+            call_id,
+            outcome="failed",
+            failure_reason="; ".join(failure_parts),
+        )
+
+
+def _schedule_call_finalize(call_id: str, call_state: dict) -> None:
+    task = asyncio.create_task(_finalize_call_record(call_id, call_state))
+    _finalize_tasks.add(task)
+    task.add_done_callback(_finalize_tasks.discard)
+
+
 @server.rtc_session(agent_name="outbound-agent")
 async def outbound_agent(ctx: JobContext):
     ctx.log_context_fields = {
@@ -291,6 +339,21 @@ async def outbound_agent(ctx: JobContext):
 
     await ctx.connect()
 
+    call_id = ctx.room.name or "outbound-call"
+    call_state: dict = {
+        "started_recorded": False,
+        "agent_spoke": False,
+        "ended_by_answering_machine": False,
+        "close_reason": None,
+        "close_error": None,
+    }
+
+    started_result = await db_record_call_started(
+        call_id=call_id,
+        channel="sip",
+    )
+    call_state["started_recorded"] = started_result.get("success", False)
+
     # Same voice pipeline as src/agent.py — see that file for the annotated version.
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
@@ -308,11 +371,23 @@ async def outbound_agent(ctx: JobContext):
         preemptive_generation=True,
     )
 
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev: AgentStateChangedEvent):
+        if ev.new_state == "speaking":
+            call_state["agent_spoke"] = True
+
+    @session.on("close")
+    def on_close(ev: CloseEvent):
+        call_state["close_reason"] = ev.reason.value
+        call_state["close_error"] = ev.error
+        if call_state["started_recorded"]:
+            _schedule_call_finalize(call_id, call_state)
+
     # Start the session while the phone is still ringing so the models are warm
     # by the time somebody picks up.
     session_started = asyncio.create_task(
         session.start(
-            agent=OutboundAgent(ctx),
+            agent=OutboundAgent(ctx, call_state=call_state),
             room=ctx.room,
             room_options=room_io.RoomOptions(
                 audio_input=room_io.AudioInputOptions(
@@ -349,6 +424,12 @@ async def outbound_agent(ctx: JobContext):
             e.message,
             e.metadata.get("sip_status"),
         )
+        if call_state["started_recorded"]:
+            await db_record_call_finished(
+                call_id,
+                outcome="failed",
+                failure_reason=f"call not answered: {e.message}",
+            )
         session_started.cancel()
         ctx.shutdown()
         return
