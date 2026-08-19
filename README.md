@@ -3,7 +3,8 @@
 ArthSakhi (अर्थसखी, "friend of money") is a voice-first financial-literacy assistant that helps people in India understand government financial schemes and safe digital-banking practices — simply by speaking.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![TypeScript](https://img.shields.io/badge/TypeScript-React-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io)
-[![BLOG:HASHNODE](https://takshak.hashnode.dev/arthsakhi-building-a-voice-agent-that-knows-when-to-speak-act-and-ask-for-help)]
+[![BLOG: HASHNODE](https://img.shields.io/badge/Hashnode
+)](https://takshak.hashnode.dev/arthsakhi-building-a-voice-agent-that-knows-when-to-speak-act-and-ask-for-help)
 
 This is a challenge/demo project, not a financial product. It shows how a conversational voice agent can be built responsibly around a sensitive, real-world domain: spoken financial guidance.
 
