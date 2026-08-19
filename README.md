@@ -341,16 +341,13 @@ The pytest suite covers SQLite initialization, consent-gated memory (including r
 
 **Suitable for a local demo.** The browser conversation flow, eligibility guidance over the local curated dataset, the specialist handoff, and both dashboards.
 
-**Required before production.** Replace the local dataset with a verified, dated official source; add reminder scheduling with a stored opt-out; add caller authentication and encrypted, backed-up storage; connect the human-support queue to a real workflow; add scaling, observability, and data-retention policies.
-
 ---
 
 ## Links
 
 - **Public repository:** https://github.com/icvbt/murf-livekit-starter
-- **Demo video:** *pending — add the link when available*
-- **Day 10 blog post:** *pending — add the link when available*
-- **LinkedIn post:** *pending — add the link when available*
+- **Day 10 blog post:** https://takshak.hashnode.dev/arthsakhi-building-a-voice-agent-that-knows-when-to-speak-act-and-ask-for-help
+- **LinkedIn post:** https://www.linkedin.com/posts/icvbt_murfaivoiceagentschallenge-10daysofaivoiceagents-ugcPost-7494459755499769856-jV_J/
 - **Underlying docs:** [LiveKit Agents](https://docs.livekit.io/agents) · [Murf Falcon TTS](https://murf.ai/api/docs/text-to-speech/streaming) · [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library) · [Deepgram](https://developers.deepgram.com)
 
 ---
